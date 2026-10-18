@@ -37,10 +37,17 @@ $insider = Get-First 'https://update.code.visualstudio.com/api/releases/insider'
 # release list and pick the newest genuine version tag (semver-descending,
 # skip the rolling "nightly" tag and any non-version tags).
 $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/electron/nightlies/releases?per_page=100' -TimeoutSec 60
-$nightly = ($rel |
-  Where-Object { $_.tag_name -match '^\d' -and $_.tag_name -like '*nightly*' } |
-  Sort-Object { [version]($_.tag_name -replace '.*-nightly\.\d+$','') -replace '^v','' } -Descending |
-  Select-Object -First 1).tag_name -replace '^v'
+$candidates = @($rel | Where-Object {
+  # nightly version tags look like "46.0.0-nightly.20261016" (no v-prefix).
+  # Skip the rolling "nightly" tag and anything that isn't a versioned nightly.
+  $_.tag_name -match '^\d+\.\d+\.\d+-nightly\.\d+$'
+})
+if ($candidates.Count -eq 0) { throw "no nightly version tags among $($rel.Count) releases" }
+# sort key: 46.0.0-nightly.20261016 -> 46.0.0 (drop the -nightly.<date> suffix),
+# compare as [version] descending so the newest MAJOR.minor.patch wins.
+$nightly = ($candidates |
+  Sort-Object { ([version]($_.tag_name -replace '-nightly\.\d+$','')) } -Descending |
+  Select-Object -First 1).tag_name
 if (-not $nightly) { throw "could not resolve newest nightly version from $($rel.Count) releases" }
 Write-Host "newest electron nightly: $nightly"
 

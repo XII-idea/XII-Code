@@ -28,28 +28,55 @@ function Get-First { param([string]$url) $r = Invoke-RestMethod -Uri $url -Timeo
 $stable = Get-First 'https://update.code.visualstudio.com/api/releases/stable'
 $insider = Get-First 'https://update.code.visualstudio.com/api/releases/insider'
 
-# newest electron nightly = tag of the most recently UPDATED release on
-# electron/nightlies. The rolling "nightly" tag is a permanent, ever-updated
-# release (NOT the newest version), so sorting by published_at desc and taking
-# the first is the correct "latest nightly version" signal.
-# electron/nightlies has one rolling release tagged "nightly" that is updated
-# in place every day — it is NOT the newest version tag. Fetch the recent
-# release list and pick the newest genuine version tag (semver-descending,
-# skip the rolling "nightly" tag and any non-version tags).
-$rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/electron/nightlies/releases?per_page=100' -TimeoutSec 60
-$candidates = @($rel | Where-Object {
-  # nightly version tags look like "v46.0.0-nightly.20261016" (v-prefix present
-  # on the GitHub API tag_name). Skip the rolling "nightly" tag.
-  $_.tag_name -match '^v?\d+\.\d+\.\d+-nightly\.\d+$'
-})
-if ($candidates.Count -eq 0) { throw "no nightly version tags among $($rel.Count) releases" }
-# sort key: strip an optional v-prefix and the -nightly.<date> suffix so
-# v46.0.0-nightly.20261016 -> 46.0.0 (a clean [version]); newest major wins.
-$nightly = ($candidates |
-  Sort-Object { ([version]($_.tag_name -replace '^v','' -replace '-nightly\.\d+$','')) } -Descending |
-  Select-Object -First 1).tag_name -replace '^v',''
-if (-not $nightly) { throw "could not resolve newest nightly version from $($rel.Count) releases" }
-Write-Host "newest electron nightly: $nightly"
+# newest electron nightly = the newest version tag on electron/nightlies.
+# The rolling "nightly" tag is a permanent release updated in place every day
+# (NOT the newest version tag), so we must pick the highest MAJOR.minor.patch
+# among the genuine version tags.
+#
+# Rate-limit handling:
+#   - CI (windows-latest) shares an egress IP that exhausts the unauthenticated
+#     60 req/h GitHub limit fast. GITHUB_TOKEN is present on CI (ci.yml grants
+#     contents: write), and authenticated calls get 5000 req/h — so when a token
+#     is available we issue ONE per_page=1 call (most-recently-updated release,
+#     which is the rolling "nightly" build).
+#   - local (no token) falls back to an unauthenticated per_page=5 list and sorts.
+# If the nightly source fails entirely (rate limit / outage) we DO NOT throw:
+# stable/insider detection is independent, and the caller (ci.yml) treats an
+# empty nightly as "keep the existing pin, skip auto-bump".
+function Get-LatestNightly {
+  $token = $env:GITHUB_TOKEN
+  $accept = 'application/vnd.github+json'
+  try {
+    if ($token) {
+      $h = @{ Authorization = "token $token"; Accept = $accept }
+      $uri = 'https://api.github.com/repos/electron/nightlies/releases?per_page=1'
+      $first = Invoke-RestMethod -Uri $uri -Headers $h -TimeoutSec 60
+      if ($first.tag_name -match '^v?\d+\.\d+\.\d+-nightly\.\d+$') {
+        return $first.tag_name -replace '^v',''
+      }
+    }
+    # fallback: list a few releases and pick the newest version tag
+    $h = @{ Accept = $accept }
+    if ($token) { $h.Authorization = "token $token" }
+    $uri = 'https://api.github.com/repos/electron/nightlies/releases?per_page=5'
+    $rel = @(Invoke-RestMethod -Uri $uri -Headers $h -TimeoutSec 60)
+    $candidates = @($rel | Where-Object { $_.tag_name -match '^v?\d+\.\d+\.\d+-nightly\.\d+$' })
+    if ($candidates.Count -eq 0) { return $null }
+    return (($candidates |
+      Sort-Object { ([version]($_.tag_name -replace '^v','' -replace '-nightly\.\d+$','')) } -Descending |
+      Select-Object -First 1).tag_name -replace '^v','')
+  } catch {
+    Write-Warning "Get-LatestNightly: $($_.Exception.Message)"
+    return $null
+  }
+}
+$nightly = Get-LatestNightly
+if ($nightly) {
+  Write-Host "newest electron nightly: $nightly"
+} else {
+  Write-Warning "could not resolve newest nightly (rate limit or outage); keeping existing pin"
+  $nightly = ''
+}
 
 $prevStable = ''; $prevInsider = ''; $prevNightly = ''
 if (Test-Path $cacheFile) {

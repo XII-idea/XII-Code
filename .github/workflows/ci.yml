@@ -97,15 +97,13 @@ jobs:
             if ($curPin -ne $report.nightly) {
               $bump = $true
               Write-Host "auto-bump electron pin: $curPin -> $report.nightly"
-              # Build the pin file as a here-string so the key=value lines
-              # are written verbatim (no string-concat quoting pitfalls).
-              $pinContent = @'
-target=
-ms_build_id=0
-'@
-              # insert the resolved nightly into the target line
-              $pinContent = $pinContent -replace '^target=$', ("target=" + $report.nightly)
-              Set-Content $pf $pinContent -Encoding UTF8
+              # Build the pin content as plain single-quoted strings (no
+              # here-string: inside a YAML block scalar a here-string's '@
+              # closing marker must sit at column 0, which the indentation
+              # breaks). Each key=value line is written verbatim.
+              $line1 = 'target=' + $report.nightly
+              $line2 = 'ms_build_id=0'
+              Set-Content $pf ($line1, $line2) -Encoding UTF8
             }
           }
 

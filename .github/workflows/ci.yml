@@ -182,14 +182,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '26.12.0'
+          # .nvmrc pins 24.18.0 (same major required by preinstall.ts)
+          node-version: '24.18.0'
 
       - name: Install Linux packaging tools
         if: ${{ startsWith(matrix.target, 'linux') }}
         shell: bash
         run: |
+          # rpm provides the rpmbuild command used by the rpm gulp task
+          # (matches the package VS Code's own pr-linux-test installs).
+          # fakeroot lets dpkg-deb run as non-root.
           sudo apt-get update -qq
-          sudo apt-get install -y -qq fakeroot devscripts dpkg-dev rpm-build
+          sudo apt-get install -y -qq fakeroot dpkg-dev rpm
 
       - name: Prepare upstream (merge brand + patch + pin + checksums)
         shell: pwsh

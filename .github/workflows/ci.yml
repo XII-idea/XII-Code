@@ -69,13 +69,26 @@ jobs:
           # run detection; check-updates.ps1 diffs against .cache/check-updates.json and rewrites it
           $report = & ./scripts/check-updates.ps1 | ConvertFrom-Json
           $forceChannel = '${{ inputs.channel }}'
-          # a channel builds if: it changed since last run, OR no prev state, OR dispatch forced it
-          $buildStable   = $report.actions -contains 'stable'  -or $report.prevStable -eq ''  -or $forceChannel -eq 'stable'
-          $buildInsider  = $report.actions -contains 'insider' -or $report.prevInsider -eq '' -or $forceChannel -eq 'insider'
-          # if ONLY the electron nightly changed, build both channels so the new pin rolls forward
-          if (($report.actions -contains 'nightly') -and $report.actions.Count -eq 1) {
+          $eventName = '${{ github.event_name }}'
+
+          # Per-event build policy:
+          #   push            -> unconditional FULL build (both channels)
+          #   workflow_dispatch -> full build unless a specific channel is forced
+          #   schedule        -> only build channels that CHANGED since last run
+          #                      (or all if no prev state / only nightly changed)
+          if ($eventName -eq 'push') {
             $buildStable = $true; $buildInsider = $true
+            Write-Host "push event: building BOTH channels (full build)"
+          } else {
+            # a channel builds if: it changed since last run, OR no prev state, OR dispatch forced it
+            $buildStable   = $report.actions -contains 'stable'  -or $report.prevStable -eq ''  -or $forceChannel -eq 'stable'
+            $buildInsider  = $report.actions -contains 'insider' -or $report.prevInsider -eq '' -or $forceChannel -eq 'insider'
+            # if ONLY the electron nightly changed, build both channels so the new pin rolls forward
+            if (($report.actions -contains 'nightly') -and $report.actions.Count -eq 1) {
+              $buildStable = $true; $buildInsider = $true
+            }
           }
+          Write-Host "buildStable=$buildStable buildInsider=$buildInsider (event=$eventName)"
 
           # ---- electron nightly auto-bump (default true, controllable via dispatch input) ----
           # When enabled AND a nightly was successfully resolved, the pin in

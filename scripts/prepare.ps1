@@ -153,17 +153,22 @@ $json = $merged | ConvertTo-Json -Depth 16
 Set-Content -Path $upPath -Value $json -Encoding UTF8
 Write-Host "merged brand fields from $(Split-Path $ovPath -Leaf) into $upPath"
 
-# ---- 3. apply the brand patch (company/copyright) ----------------------
-$patch = Join-Path $PatchesDir '0001-electron-config.patch'
-if (Test-Path $patch) {
-  # the patch's context lines match current main; apply idempotently
-  $applyScript = "set -e" + [char]10 +
-    "cd '" + $VscodeDir.Replace('\','/') + "'" + [char]10 +
-    "if git apply --check '" + $patch.Replace('\','/') + "' 2>/dev/null; then git apply '" + $patch.Replace('\','/') + "'; else echo 'patch already applied or no context; skipping'; fi"
-  & $GitBash --login -c $applyScript
-  if ($LASTEXITCODE -ne 0) { throw "patch apply failed (exit $LASTEXITCODE)" }
+# ---- 3. apply brand + fix patches (apply every *.patch in order) -------
+# Patches are applied in filename order; each is idempotent (skip if already
+# applied or its context no longer matches, e.g. after a partial apply).
+$patches = Get-ChildItem -Path $PatchesDir -Filter '*.patch' -ErrorAction SilentlyContinue |
+  Sort-Object Name
+if ($patches.Count -eq 0) {
+  Write-Warning "no patches found in $PatchesDir; skipping"
 } else {
-  Write-Warning "no patch at $patch; skipping"
+  foreach ($patch in $patches) {
+    $rel = $patch.FullName.Replace('\','/')
+    $applyScript = "set -e" + [char]10 +
+      "cd '" + $VscodeDir.Replace('\','/') + "'" + [char]10 +
+      "if git apply --check '" + $rel + "' 2>/dev/null; then git apply '" + $rel + "'; echo 'applied " + $patch.Name + "'; else echo 'skip " + $patch.Name + " (already applied or no context)'; fi"
+    & $GitBash --login -c $applyScript
+    if ($LASTEXITCODE -ne 0) { throw "patch apply failed (exit $LASTEXITCODE): $($patch.Name)" }
+  }
 }
 
 # ---- 3b. copy brand icon + linux resources into upstream ----------------

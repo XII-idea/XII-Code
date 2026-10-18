@@ -1,0 +1,11 @@
+--- a/build/npm/electronTypes.ts
++++ b/build/npm/electronTypes.ts
+@@ -27,7 +27,12 @@
+ 
+ 	const { electronVersion } = getElectronVersion();
+-	const url = `https://github.com/electron/electron/releases/download/v${electronVersion}/electron.d.ts`;
++	// Nightly builds are published under the electron/nightlies repo, not
++	// electron/electron. Stable/beta builds come from electron/electron.
++	const repo = electronVersion.includes('nightly') ? 'electron/nightlies' : 'electron/electron';
++	const url = `https://github.com/${repo}/releases/download/v${electronVersion}/electron.d.ts`;
+ 	const contents = await download(url, { checksumSha256: expectedChecksum });

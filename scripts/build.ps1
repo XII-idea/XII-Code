@@ -22,12 +22,19 @@ param(
   [Parameter(Mandatory)][ValidateSet('stable','insider')][string]$Channel,
   [Parameter(Mandatory)][ValidateSet('win32-x64','win32-arm64','linux-x64','linux-arm64')][string]$Target,
   [Parameter()][ValidateSet('user','system')][string]$Setup = 'user',
-  [Parameter()][ValidateSet('none','min','dir','deb','rpm','setup')][string]$Formats = 'setup',
+  # win: 'none'|'min'|'dir'|'setup'   linux: 'deb'|'rpm'|'deb,rpm'
+  [Parameter()][string]$Formats = 'setup',
   [switch]$SkipInstall
 )
 
 $ErrorActionPreference = 'Stop'
 try { Set-StrictMode Latest } catch { }
+
+# validate -Formats up-front (ValidateSet can't express the comma combos)
+$validFormats = @('none','min','dir','setup','deb','rpm','deb,rpm')
+if ($Formats -notin $validFormats) {
+  throw "invalid -Formats '$Formats'; allowed: $($validFormats -join ', ')"
+}
 
 $RepoRoot  = Split-Path -Parent $PSScriptRoot
 $VscodeDir = Join-Path $RepoRoot 'vscode'

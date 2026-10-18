@@ -78,8 +78,10 @@ jobs:
           }
 
           # ---- electron nightly auto-bump (default true, controllable via dispatch input) ----
-          # When enabled, the pin in overlay/electron-pin.txt is refreshed to the latest
-          # nightly before any build, so a new Electron major rolls forward automatically.
+          # When enabled AND a nightly was successfully resolved, the pin in
+          # overlay/electron-pin.txt is refreshed to that nightly before any build.
+          # If nightly is empty (rate limit / outage), we keep the existing pin and
+          # skip the bump — stable/insider builds still proceed normally.
           $bump = $false
           $newPin = $report.nightly
           $autoBump = ('${{ inputs.autoBumpElectron }}' -eq 'true')
@@ -95,8 +97,15 @@ jobs:
             if ($curPin -ne $report.nightly) {
               $bump = $true
               Write-Host "auto-bump electron pin: $curPin -> $report.nightly"
-              $q = [char]34
-              Set-Content $pf ("target=" + $q + $report.nightly + $q + [Environment]::NewLine + "ms_build_id=" + $q + "0" + $q + [Environment]::NewLine) -Encoding UTF8
+              # Build the pin file as a here-string so the key=value lines
+              # are written verbatim (no string-concat quoting pitfalls).
+              $pinContent = @'
+target=
+ms_build_id=0
+'@
+              # insert the resolved nightly into the target line
+              $pinContent = $pinContent -replace '^target=$', ("target=" + $report.nightly)
+              Set-Content $pf $pinContent -Encoding UTF8
             }
           }
 

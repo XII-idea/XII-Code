@@ -29,14 +29,27 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $PinFile  = Join-Path $RepoRoot 'overlay/electron-pin.txt'
 
 function Resolve-LatestNightly {
-  $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/electron/nightlies/releases?per_page=1' -TimeoutSec 30
-  $tag = $rel[0].tag_name -replace '^v'
-  # verify the win32-x64 asset exists
-  $assets = $rel[0].assets.name
-  if (-not ($assets -contains "electron-$tag-win32-x64.zip")) {
-    throw "nightly $tag has no win32-x64 asset"
+  # Use the same tolerant logic as check-updates.ps1: the rolling "nightly"
+  # release is updated in place every day, so the NEWEST version tag (by
+  # semver) among the recent releases is the correct signal. Prefer an
+  # authenticated call when GITHUB_TOKEN is present (CI) to avoid the shared
+  # egress IP hitting the 60 req/h unauthenticated limit.
+  $token = $env:GITHUB_TOKEN
+  $accept = 'application/vnd.github+json'
+  try {
+    $h = @{ Accept = $accept }
+    if ($token) { $h.Authorization = "token $token" }
+    $rel = @(Invoke-RestMethod -Uri 'https://api.github.com/repos/electron/nightlies/releases?per_page=5' -Headers $h -TimeoutSec 60)
+    $candidates = @($rel | Where-Object { $_.tag_name -match '^v?\d+\.\d+\.\d+-nightly\.\d+$' })
+    if ($candidates.Count -eq 0) { throw "no nightly version tags in $($rel.Count) releases" }
+    return (($candidates |
+      Sort-Object { ([version]($_.tag_name -replace '^v','' -replace '-nightly\.\d+$','')) } -Descending |
+      Select-Object -First 1).tag_name -replace '^v','')
+  } catch {
+    # last-resort: the rolling "nightly" release's own tag is a valid version
+    $r = Invoke-RestMethod -Uri 'https://api.github.com/repos/electron/nightlies/releases/tags/nightly' -TimeoutSec 30
+    return $r.tag_name -replace '^v',''
   }
-  return $tag
 }
 
 if ($LatestNightly) { $Version = Resolve-LatestNightly }

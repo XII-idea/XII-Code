@@ -71,12 +71,16 @@ $electronVersion = ''
 $msBuildId = ''
 if (Test-Path $PinFile) {
   $raw = Get-Content $PinFile -Raw
+  # Split on \n, then trim both \r and " so CRLF (git autocrlf) or a
+  # malformed write like "target"46..." still parse.
   foreach ($line in ($raw -split "`n")) {
-    $line = $line.Trim()
+    $line = $line.Trim().Trim("`r").Trim('"')
     if (-not $line -or $line.StartsWith('#')) { continue }
-    $kv = $line.Split('=', 2)
+    # normalize: drop a leading quote-only key like "target" -> target
+    $line2 = $line -replace '^target', 'target' -replace '^ms_build_id', 'ms_build_id'
+    $kv = $line2.Split('=', 2)
     if ($kv.Count -ne 2) { continue }
-    switch ($kv[0].Trim()) {
+    switch ($kv[0].Trim().Trim('"')) {
       'target'      { $electronVersion = $kv[1].Trim().Trim('"') }
       'ms_build_id' { $msBuildId = $kv[1].Trim().Trim('"') }
     }
@@ -193,6 +197,7 @@ if (-not (Test-Path $Npmrc)) { throw "$Npmrc not found" }
 $raw = Get-Content $Npmrc -Raw
 $q = [char]34
 $targetLine = 'target=' + $q + $electronVersion + $q
+# trim \r before the line so CRLF files don't leave a trailing \r
 $raw = $raw -replace '(?m)^target=.*$', $targetLine
 # ms_build_id must remain present with quotes (electronVersion.ts regex reads the quoted value)
 $msLine = 'ms_build_id=' + $q + $msBuildId + $q
@@ -217,6 +222,10 @@ if (-not $Offline) {
 } else {
   Write-Warning "offline: left $Checksums untouched"
 }
+
+# surface the pin to callers (detect/matrix jobs can read this)
+$pinOut = [ordered]@{ target = $electronVersion; ms_build_id = $msBuildId }
+$pinOut | ConvertTo-Json | Set-Content (Join-Path $RepoRoot '.cache/electron-pin.json') -Encoding UTF8
 
 Write-Host "`nprepare OK: channel=$channel electron=$electronVersion ref=$ref"
 

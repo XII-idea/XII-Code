@@ -52,18 +52,26 @@ $Npmrc      = Join-Path $VscodeDir '.npmrc'
 $Checksums  = Join-Path $VscodeDir 'build\checksums\electron.txt'
 $PatchesDir = Join-Path $RepoRoot 'patches'
 $OverlayDir = Join-Path $RepoRoot 'overlay'
-$GitBash = $null
-foreach ($cand in @('D:\Program Files\Git\bin\bash.exe','bash')) {
-  $cmd = Get-Command $cand -ErrorAction SilentlyContinue
-  if ($cmd) { $GitBash = $cmd.Source; break }
-}
-if (-not $GitBash) { throw "git bash not found; install Git for Windows or bash" }
+# Resolve git + bash across Windows (MSYS) and Linux (system) runners.
 $GitCmd = $null
-foreach ($cand in @('D:\Program Files\Git\cmd\git.exe','git')) {
-  $cmd = Get-Command $cand -ErrorAction SilentlyContinue
-  if ($cmd) { $GitCmd = $cmd.Source; break }
+$GitBash = $null
+if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+  foreach ($cand in @('D:\Program Files\Git\bin\bash.exe','C:\Program Files\Git\bin\bash.exe','bash')) {
+    $cmd = Get-Command $cand -ErrorAction SilentlyContinue
+    if ($cmd) { $GitBash = $cmd.Source; break }
+  }
+  foreach ($cand in @('D:\Program Files\Git\cmd\git.exe','C:\Program Files\Git\cmd\git.exe','git')) {
+    $cmd = Get-Command $cand -ErrorAction SilentlyContinue
+    if ($cmd) { $GitCmd = $cmd.Source; break }
+  }
+} else {
+  # Linux runner: git on PATH; bash is /bin/bash (we only invoke git clone/apply,
+  # so bash isn't strictly needed, but keep a fallback in case of MSYS tooling).
+  $GitCmd = 'git'
+  $GitBash = 'bash'
 }
-if (-not $GitCmd) { throw "git not found" }
+if (-not $GitCmd) { throw "git not found on this runner" }
+Write-Host "using git: $GitCmd ; bash: $GitBash"
 
 # ---- 0. electron pin file lives in overlay (source of truth) -----------
 $PinFile = Join-Path $OverlayDir 'electron-pin.txt'

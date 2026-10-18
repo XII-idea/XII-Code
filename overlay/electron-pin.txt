@@ -1,0 +1,5 @@
+﻿# XII Code electron pin (source of truth)
+# 改这里后记得 commit；CI 的 build job 读取它作为 .npmrc target
+
+"target"46.0.0-nightly.20261005"
+"ms_build_id"0"

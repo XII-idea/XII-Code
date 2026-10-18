@@ -1,0 +1,15 @@
+# 上游 clone（每次 prepare 重建）
+vscode/
+# 构建产物与中间物
+.build/
+out/
+out-build/
+out-vscode-min/
+out-vscode-reh-min/
+out-vscode-reh-web-min/
+dist/
+node_modules/
+*.log
+# TMP
+tmp/
+temp/

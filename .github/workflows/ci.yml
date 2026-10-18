@@ -1,0 +1,235 @@
+﻿name: XII Code build
+
+on:
+  schedule:
+    # every 6 hours on the hour (repo owner's default branch only)
+    - cron: '0 */6 * * *'
+  # push trigger: only on main, and only when build-affecting paths change.
+  # NOTE: the detect job's auto-commit (electron-pin.txt / .cache) can land on
+  # main and re-trigger this — that is acceptable (it's a no-op build if nothing
+  # upstream changed), and deduped by the detect diff logic. If you want a hard
+  # guard, drop 'overlay/**' from paths so only scripts/patches/AGENTS trigger.
+  push:
+    branches: [ main ]
+    paths:
+      - 'overlay/**'
+      - 'patches/**'
+      - 'scripts/**'
+      - 'AGENTS.md'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'channel to force build (empty = auto-detect)'
+        required: false
+        default: ''
+        type: choice
+        options: ['', 'stable', 'insider']
+      electronPin:
+        description: 'optional explicit Electron version to pin'
+        required: false
+        default: ''
+        type: string
+      autoBumpElectron:
+        description: 'auto-bump the electron pin when a new nightly appears'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+
+concurrency:
+  group: xii-build-${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'all' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  detect:
+    runs-on: windows-latest
+    outputs:
+      stable: ${{ steps.d.outputs.stable }}
+      insider: ${{ steps.d.outputs.insider }}
+      nightly: ${{ steps.d.outputs.nightly }}
+      prevStable: ${{ steps.d.outputs.prevStable }}
+      prevInsider: ${{ steps.d.outputs.prevInsider }}
+      prevNightly: ${{ steps.d.outputs.prevNightly }}
+      buildStable: ${{ steps.d.outputs.buildStable }}
+      buildInsider: ${{ steps.d.outputs.buildInsider }}
+      bumpElectron: ${{ steps.d.outputs.bumpElectron }}
+      newPin: ${{ steps.d.outputs.newPin }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect upstream + nightly
+        id: d
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try { Set-StrictMode Latest } catch { }
+          # run detection; check-updates.ps1 diffs against .cache/check-updates.json and rewrites it
+          $report = & ./scripts/check-updates.ps1 | ConvertFrom-Json
+          $forceChannel = '${{ inputs.channel }}'
+          # a channel builds if: it changed since last run, OR no prev state, OR dispatch forced it
+          $buildStable   = $report.actions -contains 'stable'  -or $report.prevStable -eq ''  -or $forceChannel -eq 'stable'
+          $buildInsider  = $report.actions -contains 'insider' -or $report.prevInsider -eq '' -or $forceChannel -eq 'insider'
+          # if ONLY the electron nightly changed, build both channels so the new pin rolls forward
+          if (($report.actions -contains 'nightly') -and $report.actions.Count -eq 1) {
+            $buildStable = $true; $buildInsider = $true
+          }
+
+          # ---- electron nightly auto-bump (default true, controllable via dispatch input) ----
+          # When enabled, the pin in overlay/electron-pin.txt is refreshed to the latest
+          # nightly before any build, so a new Electron major rolls forward automatically.
+          $bump = $false
+          $newPin = $report.nightly
+          $autoBump = ('${{ inputs.autoBumpElectron }}' -eq 'true')
+          if ($autoBump -and $report.nightly -ne '') {
+            $pf = 'overlay/electron-pin.txt'
+            $curPin = ''
+            if (Test-Path $pf) {
+              $curPin = ((Get-Content $pf -Raw) -split "`n" | ForEach-Object {
+                $kv = $_.Trim().Split('=',2)
+                if ($kv[0].Trim() -eq 'target' -and $kv.Count -eq 2) { $kv[1].Trim().Trim('"') }
+              }) | Select-Object -First 1
+            }
+            if ($curPin -ne $report.nightly) {
+              $bump = $true
+              Write-Host "auto-bump electron pin: $curPin -> $report.nightly"
+              $q = [char]34
+              Set-Content $pf ("target=" + $q + $report.nightly + $q + [Environment]::NewLine + "ms_build_id=" + $q + "0" + $q + [Environment]::NewLine) -Encoding UTF8
+            }
+          }
+
+          # surface outputs
+          $ghOutput = $env:GITHUB_OUTPUT
+          "stable=$($report.stable)" | Out-File -Append $ghOutput -Encoding utf8
+          "insider=$($report.insider)" | Out-File -Append $ghOutput -Encoding utf8
+          "nightly=$($report.nightly)" | Out-File -Append $ghOutput -Encoding utf8
+          "prevStable=$($report.prevStable)" | Out-File -Append $ghOutput -Encoding utf8
+          "prevInsider=$($report.prevInsider)" | Out-File -Append $ghOutput -Encoding utf8
+          "prevNightly=$($report.prevNightly)" | Out-File -Append $ghOutput -Encoding utf8
+          "buildStable=$($buildStable)" | Out-File -Append $ghOutput -Encoding utf8
+          "buildInsider=$($buildInsider)" | Out-File -Append $ghOutput -Encoding utf8
+          "bumpElectron=$($bump)" | Out-File -Append $ghOutput -Encoding utf8
+          "newPin=$($newPin)" | Out-File -Append $ghOutput -Encoding utf8
+
+          # persist refreshed state + any pin bump for the next periodic run
+          & git config user.email "418885@users.noreply.github.com"
+          & git config user.name "github-actions[bot]"
+          & git add .cache/check-updates.json overlay/electron-pin.txt
+          & git diff --cached --quiet 2>$null
+          if ($LASTEXITCODE -eq 1) {
+            & git commit -m "chore: refresh detection state + auto-bump electron pin" 2>$null
+            & git push 2>$null
+          }
+
+  # Compose the build matrix (channel x target) from detect outputs.
+  matrix:
+    needs: detect
+    if: ${{ needs.detect.outputs.buildStable == 'true' || needs.detect.outputs.buildInsider == 'true' }}
+    runs-on: windows-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - name: Compose target matrix
+        id: m
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try { Set-StrictMode Latest } catch { }
+          $targets = @('win32-x64','win32-arm64','linux-x64','linux-arm64')
+          $m = @()
+          if ('${{ needs.detect.outputs.buildStable }}' -eq 'true')   { foreach ($t in $targets) { $m += @{ channel='stable';  target=$t } } }
+          if ('${{ needs.detect.outputs.buildInsider }}' -eq 'true')  { foreach ($t in $targets) { $m += @{ channel='insider'; target=$t } } }
+          $json = $m | ConvertTo-Json -Depth 3 -Compress
+          "matrix=$json" | Out-File -Append $env:GITHUB_OUTPUT -Encoding utf8
+          Write-Host "matrix=$json"
+
+  build:
+    needs: [detect, matrix]
+    if: ${{ needs.detect.outputs.buildStable == 'true' || needs.detect.outputs.buildInsider == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.matrix.outputs.matrix) }}
+    # windows targets on windows-latest; linux targets on ubuntu-latest
+    runs-on: ${{ startsWith(matrix.target, 'win32') && 'windows-latest' || 'ubuntu-latest' }}
+    env:
+      CHANNEL: ${{ matrix.channel }}
+      TARGET: ${{ matrix.target }}
+      ELECTRON_PIN: ${{ needs.detect.outputs.newPin }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.12.0'
+
+      - name: Install Linux packaging tools
+        if: ${{ startsWith(matrix.target, 'linux') }}
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fakeroot devscripts dpkg-dev rpm-build
+
+      - name: Prepare upstream (merge brand + patch + pin + checksums)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try { Set-StrictMode Latest } catch { }
+          # explicit electronPin (dispatch) overrides the auto-bumped pin
+          if ('${{ inputs.electronPin }}' -ne '') {
+            & .\scripts\pin-electron.ps1 -Version '${{ inputs.electronPin }}'
+          }
+          & .\scripts\prepare.ps1 -Channel $env:CHANNEL -Target $env:TARGET
+
+      - name: Install C++ toolchain (Windows)
+        if: ${{ startsWith(matrix.target, 'win32') }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try { Set-StrictMode Latest } catch { }
+          # GitHub windows-latest ships VS2022 Enterprise; enter its dev prompt for cl.exe
+          if (Test-Path 'C:\Program Files (x86)\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat') {
+            & 'C:\Program Files (x86)\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat' -arch=x64 -host_arch=x64
+            cl
+          }
+
+      - name: Compile + package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try { Set-StrictMode Latest } catch { }
+          $fmt   = if ($env:TARGET -like 'win*') { 'setup' } else { 'deb,rpm' }
+          $setup = if ($env:TARGET -eq 'win32-x64') { 'system' } else { 'user' }
+          & .\scripts\build.ps1 -Channel $env:CHANNEL -Target $env:TARGET -Formats $fmt -Setup $setup
+
+      - name: Upload artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: xii-code-${{ matrix.channel }}-${{ matrix.target }}
+          path: dist/${{ matrix.channel }}/${{ matrix.target }}
+          retention-days: 1
+
+      - name: Record to VERSIONS.md
+        if: ${{ success() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try { Set-StrictMode Latest } catch { }
+          $upVersion = if ($env:CHANNEL -eq 'stable') { '${{ needs.detect.outputs.stable }}' } else { '${{ needs.detect.outputs.insider }}' }
+          & .\scripts\release.ps1 -Channel $env:CHANNEL -Version $upVersion
+
+  cleanup:
+    # expire artifacts / draft releases older than 8h
+    runs-on: windows-latest
+    needs: [detect]
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expire artifacts older than 8h
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try { Set-StrictMode Latest } catch { }
+          & .\scripts\cleanup.ps1 -RetentionHours 8

@@ -1,0 +1,12 @@
+--- a/build/lib/electron.ts
++++ b/build/lib/electron.ts
+@@ -x,x +x,x @@ build/lib/electron.ts
+ export const config = {
+ 	version: electronVersion,
+-	productAppName: product.nameLong,
+-	companyName: 'Microsoft Corporation',
+-	copyright: 'Copyright (C) 2026 Microsoft. All rights reserved',
++	productAppName: product.nameLong,
++	companyName: 'XII',
++	copyright: 'Copyright (C) 2026 XII. All rights reserved.',
+ 	darwinExecutable: product.nameShort,
